@@ -252,8 +252,8 @@ function type(el,t){return new Promise(r=>{el.textContent='';const a=[...F(Strin
 const APPS={whatsapp:'com.whatsapp',youtube:'com.google.android.youtube',facebook:'com.facebook.katana',instagram:'com.instagram.android',chrome:'com.android.chrome',maps:'com.google.android.apps.maps',gmail:'com.google.android.gm',telegram:'org.telegram.messenger',messenger:'com.facebook.orca',tiktok:'com.zhiliaoapp.musically',spotify:'com.spotify.music',playstore:'com.android.vending',camera:'com.android.camera',settings:'com.android.settings'};
 const PANELS={wifi:'WIFI_SETTINGS',data:'DATA_ROAMING_SETTINGS',bluetooth:'BLUETOOTH_SETTINGS',airplane:'AIRPLANE_MODE_SETTINGS',location:'LOCATION_SOURCE_SETTINGS',sound:'SOUND_SETTINGS',display:'DISPLAY_SETTINGS',main:'SETTINGS'};
 
-function sys(){return `You are Venus, a voice assistant running on the user's Android phone. Reply ONLY with one JSON object: {"reply":"short friendly spoken reply in the same language the user speaks","action":null or one action}.
-Actions: {"type":"open_url","url":""} {"type":"open_app","app":"name","package":"android package if known"} {"type":"play_search","query":"game or app name"} {"type":"call","to":"contact name or number"} {"type":"sms","to":"","text":""} {"type":"whatsapp","to":"","text":""} {"type":"settings","panel":"wifi|data|bluetooth|airplane|location|sound|display|main"}.
+function sys(){return `You are Venus, a voice assistant running on the user's Android phone. Reply ONLY with one JSON object: {"reply":"short friendly spoken reply in the same language the user speaks","action":null or one action,"lang":"BCP-47 code of the language of your reply, e.g. bn-BD, en-US, hi-IN"}.
+Actions: {"type":"open_url","url":""} {"type":"open_app","app":"name","package":"android package if known"} {"type":"play_search","query":"game or app name"} {"type":"call","to":"contact name or number"} {"type":"sms","to":"","text":""} {"type":"whatsapp","to":"","text":""} {"type":"settings","panel":"wifi|data|bluetooth|airplane|location|sound|display|main"} {"type":"task","goal":"full description of a multi-step job to do by operating apps on the phone, e.g. open YouTube, find a channel, open a video and post a comment. Include the app name, the exact text to write, and when to stop"}. Use task only for jobs that need several taps inside an app; use the simple actions above for everything else.
 Use action null for normal conversation. Keep replies short. The user's contacts are on the phone: for call, sms or whatsapp put the spoken contact name or number in "to".`}
 
 function num(to){to=String(to||'');return /^[+\d\s-]{6,}$/.test(to)?to.replace(/[^\d+]/g,''):null}
@@ -274,8 +274,32 @@ if(!p){add('a','I could not find that app. Try searching for it in the Play Stor
 u=`intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;package=${p};end`}
 else if(a.type==='play_search')u='market://search?q='+e(a.query)+'&c=apps';
 else if(a.type==='settings')u=`intent:#Intent;action=android.settings.${PANELS[a.panel]||'SETTINGS'};end`;
+else if(a.type==='task'){agent(a.goal);return}
 else if(['call','sms','whatsapp'].includes(a.type)){const n=num(a.to);if(n)dial(a,n);else pick(a);return}
 if(u)location.href=u}
+
+let agentBusy=false;
+const AGENT_SYS=`You control an Android phone through its accessibility tree to finish a goal. Each turn you get the GOAL, the STEPS already done, and the current SCREEN as lines: id|kind|text|description|flags (c=clickable e=editable s=scrollable). Reply ONLY with one JSON object: {"act":"open|click|type|enter|scroll|back|home|wait|done","id":number,"text":"text to type","dir":"down|up","app":"app name","package":"android package name","say":"short spoken message to the user in their language"}.
+open = launch an app (give package). click = tap element id. type = write text into editable element id. enter = press search/enter on editable element id. scroll = scroll the main list. wait = wait for loading. done = goal finished or impossible, put the result in say. Do ONE step per turn. Never enter passwords or payment details. If you are unsure or stuck, finish with done and explain.`;
+async function agent(goal){
+if(!window.VenusAndroid||!VenusAndroid.a11yReady()){add('a','Please turn on Accessibility for Venus first: Settings > Permissions > Accessibility.');return}
+if(agentBusy)return;agentBusy=true;convUntil=0;VenusAndroid.holdListen(true);
+const log=[];add('a','Working on it...');
+try{
+for(let n=0;n<25;n++){
+await new Promise(r=>setTimeout(r,1600));
+const scr=VenusAndroid.screen();
+const r=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',headers:{'Authorization':'Bearer '+S.key,'Content-Type':'application/json'},body:JSON.stringify({model:S.model,messages:[{role:'system',content:AGENT_SYS},{role:'user',content:'GOAL: '+goal+'\nSTEPS: '+(log.join(' | ')||'none')+'\nSCREEN:\n'+scr}]})});
+const j=await r.json();if(!r.ok)throw new Error(j.error?.message||r.status);
+const raw=j.choices[0].message.content||'';
+let o;try{o=JSON.parse(raw.slice(raw.indexOf('{'),raw.lastIndexOf('}')+1))}catch(e){continue}
+if(o.act==='done'){if(o.say){add('a',o.say);say(o.say)}break}
+let res='ok';
+if(o.act==='open'){const pk=o.package||APPS[String(o.app||'').toLowerCase().replace(/\s/g,'')]||'';location.href='intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;package='+pk+';end'}
+else res=VenusAndroid.act(String(o.act),o.id==null?-1:+o.id,String(o.text||''),String(o.dir||''));
+log.push(o.act+(o.id!=null?' #'+o.id:'')+(o.text?' "'+o.text+'"':'')+(res!=='ok'?' ('+res+')':''));
+}}catch(e){add('a','Task error: '+e.message)}
+VenusAndroid.holdListen(false);agentBusy=false;convUntil=Date.now()+45000}
 
 let hist=[];
 async function ask(text,files=[]){
@@ -290,23 +314,24 @@ const r=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POS
 const j=await r.json();if(!r.ok)throw new Error(j.error?.message||r.status);
 const raw=j.choices[0].message.content||'';hist.push({role:'assistant',content:raw});
 let o;try{o=JSON.parse(raw.slice(raw.indexOf('{'),raw.lastIndexOf('}')+1))}catch(e){o={reply:raw,action:null}}
-say(o.reply);await type(th,o.reply||'');
+say(o.reply,o.lang);convUntil=Date.now()+45000;await type(th,o.reply||'');
 if(o.action){const b=document.createElement('button');b.textContent='Run: '+o.action.type;b.onclick=()=>run(o.action);th.appendChild(document.createElement('br'));th.appendChild(b);run(o.action)}
 }catch(e){th.textContent='Error: '+e.message}}
 
-let speaking=false;
-function say(t){if(!S.speak||!t||!window.speechSynthesis)return;speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang=S.lang;u.onstart=()=>speaking=true;u.onend=u.onerror=()=>setTimeout(()=>speaking=false,500);speechSynthesis.speak(u)}
+let speaking=false,convUntil=0;
+function say(t,lang){if(!S.speak||!t||!window.speechSynthesis)return;speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang=lang||S.lang;const pl=b=>{try{window.VenusAndroid&&VenusAndroid.pauseListen(b)}catch(e){}};u.onstart=()=>{speaking=true;pl(true)};u.onend=u.onerror=()=>{pl(false);setTimeout(()=>speaking=false,500)};speechSynthesis.speak(u)}
 
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 let rec=null,mode=0,awaiting=0;
 function upd(){$('#vstart').textContent=F(mode?'Stop Voice':'Start Voice');$('#vstart').classList.toggle('live',!!mode);$('#mic').className=mode?'live':'';$('#field').classList.toggle('live',!!mode);$('#in').placeholder=mode?'Listening... say "'+S.wake.split(',')[0].trim()+'"':'Type a command or message';
 }
 function heard(t){
+if(agentBusy)return;
 if(mode===1){ask(t);return}
 const l=t.toLowerCase();
 for(const x of S.wake.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean)){const i=l.indexOf(x);
 if(i>=0){const c=t.slice(i+x.length).replace(/^[\s,.!?]+/,'');if(c)ask(c);else{awaiting=Date.now()+10000;say('Yes, I am listening.')}return}}
-if(Date.now()<awaiting){awaiting=0;ask(t)}}
+if(Date.now()<awaiting||Date.now()<convUntil){awaiting=0;ask(t)}}
 function setMode(m){mode=m;if(rec){const o=rec;rec=null;try{o.abort()}catch(e){}}
 if(m){if(!SR){mode=0;add('a','Voice input is not supported in this browser. Please use Chrome.');upd();return}
 const r=new SR();rec=r;r.lang=S.lang;r.continuous=m===2;r.interimResults=false;
@@ -367,7 +392,7 @@ const pstate={};for(const k in PM)if(flags[k])pstate[k]=true;
 function renderPerms(){const l=$('#plist');l.innerHTML='';for(const k in PM){const r=document.createElement('div');r.className='prow';const n=document.createElement('span');n.textContent=F(PM[k].n);r.appendChild(n);
 if(pstate[k]){const t=document.createElement('i');t.className='tick';r.appendChild(t)}else{const b=document.createElement('button');b.className='turn';b.textContent='Turn on';b.onclick=()=>askPerm(k);r.appendChild(b)}l.appendChild(r)}}
 async function askPerm(k){try{await PM[k].go();pstate[k]=true;if(PM[k].flag){flags[k]=1;try{localStorage.setItem('venus_perm',JSON.stringify(flags))}catch(e){}}}catch(e){toast(e instanceof TypeError?'Not supported in this browser.':'Not allowed. If it is blocked, enable it in Chrome site settings.')}renderPerms()}
-async function syncPerms(){if(window.VenusAndroid)for(const k of['contacts','gallery','overlay'])pstate[k]=VenusAndroid.hasPerm(k);renderPerms();for(const k in PM){if(!PM[k].q)continue;try{const r=await navigator.permissions.query({name:PM[k].q});pstate[k]=r.state==='granted';r.onchange=()=>{pstate[k]=r.state==='granted';renderPerms()}}catch(e){}}renderPerms()}
+async function syncPerms(){if(window.VenusAndroid)for(const k of['contacts','gallery','overlay','access'])pstate[k]=VenusAndroid.hasPerm(k);renderPerms();for(const k in PM){if(!PM[k].q)continue;try{const r=await navigator.permissions.query({name:PM[k].q});pstate[k]=r.state==='granted';r.onchange=()=>{pstate[k]=r.state==='granted';renderPerms()}}catch(e){}}renderPerms()}
 
 (async()=>{
 const it=$('#it'),ov=$('#intro');
