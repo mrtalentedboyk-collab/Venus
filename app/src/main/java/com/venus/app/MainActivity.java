@@ -8,6 +8,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
+import android.media.AudioManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -47,10 +48,12 @@ public class MainActivity extends Activity {
     private String pendingKey = "";
     private boolean pendingOverlay = false;
 
+    // speech
     private final Handler h = new Handler(Looper.getMainLooper());
     private SpeechRecognizer sr;
     private boolean listening = false, continuous = false;
     private String lang = "en-US";
+    private boolean paused = false, hold = false;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -115,6 +118,7 @@ public class MainActivity extends Activity {
         askAllPermissions();
     }
 
+    // ---------- permissions ----------
     private String[] mediaPerms() {
         return Build.VERSION.SDK_INT >= 33
                 ? new String[]{Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO}
@@ -187,6 +191,7 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ---------- external intents ----------
     private void openExternal(Uri u) {
         try {
             String url = u.toString();
@@ -212,6 +217,7 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Back button keeps Venus running in the background. */
     @Override
     public void onBackPressed() {
         if (web != null && web.canGoBack()) web.goBack();
@@ -222,15 +228,28 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         listening = false;
         if (sr != null) { sr.destroy(); sr = null; }
+        beepMute(false);
         super.onDestroy();
     }
 
+    // ---------- native speech recognition (WebView has none) ----------
     private void js(final String code) {
         if (web != null) web.post(() -> web.evaluateJavascript(code, null));
     }
 
+    /** Hides the Google "ding" by muting audio for a moment. */
+    private void beepMute(boolean m) {
+        AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+        int[] streams = {AudioManager.STREAM_MUSIC, AudioManager.STREAM_SYSTEM, AudioManager.STREAM_NOTIFICATION};
+        for (int st : streams) {
+            try {
+                am.adjustStreamVolume(st, m ? AudioManager.ADJUST_MUTE : AudioManager.ADJUST_UNMUTE, 0);
+            } catch (Exception ignored) {}
+        }
+    }
+
     private void listenOnce() {
-        if (!listening) return;
+        if (!listening || paused || hold) return;
         if (sr != null) { sr.destroy(); sr = null; }
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             listening = false;
@@ -243,7 +262,7 @@ public class MainActivity extends Activity {
             public void onBeginningOfSpeech() {}
             public void onRmsChanged(float v) {}
             public void onBufferReceived(byte[] b) {}
-            public void onEndOfSpeech() {}
+            public void onEndOfSpeech() { beepMute(true); h.postDelayed(() -> beepMute(false), 900); }
             public void onPartialResults(Bundle p) {}
             public void onEvent(int t, Bundle p) {}
 
@@ -268,7 +287,11 @@ public class MainActivity extends Activity {
         i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang);
         i.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
         i.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false);
+        if (Build.VERSION.SDK_INT >= 33)
+            i.putExtra(RecognizerIntent.EXTRA_ADDITIONAL_LANGUAGES, new String[]{"bn-BD", "en-US", "hi-IN"});
+        beepMute(true);
         sr.startListening(i);
+        h.postDelayed(() -> beepMute(false), 700);
     }
 
     private void next(long delay) {
@@ -277,6 +300,7 @@ public class MainActivity extends Activity {
         else { listening = false; js("__venusEnd()"); }
     }
 
+    // ---------- JS bridge ----------
     private class Bridge {
         @JavascriptInterface
         public void startListen(final String l, final boolean cont) {
@@ -294,12 +318,56 @@ public class MainActivity extends Activity {
                 listening = false;
                 h.removeCallbacksAndMessages(null);
                 if (sr != null) { sr.destroy(); sr = null; }
+                beepMute(false);
             });
+        }
+
+        /** Called while Venus is speaking, so it does not hear itself. */
+        @JavascriptInterface
+        public void pauseListen(final boolean p) {
+            runOnUiThread(() -> {
+                paused = p;
+                h.removeCallbacksAndMessages(null);
+                if (sr != null) { sr.destroy(); sr = null; }
+                beepMute(false);
+                if (p) h.postDelayed(() -> { paused = false; listenOnce(); }, 45000);
+                else listenOnce();
+            });
+        }
+
+        /** Called while a phone task is running. */
+        @JavascriptInterface
+        public void holdListen(final boolean x) {
+            runOnUiThread(() -> {
+                hold = x;
+                h.removeCallbacksAndMessages(null);
+                if (sr != null) { sr.destroy(); sr = null; }
+                beepMute(false);
+                if (!x) listenOnce();
+            });
+        }
+
+        @JavascriptInterface
+        public boolean a11yReady() {
+            return VenusAccessibility.instance != null;
+        }
+
+        @JavascriptInterface
+        public String screen() {
+            VenusAccessibility a = VenusAccessibility.instance;
+            return a == null ? "(accessibility is off)" : a.screen();
+        }
+
+        @JavascriptInterface
+        public String act(String act, int id, String text, String dir) {
+            VenusAccessibility a = VenusAccessibility.instance;
+            return a == null ? "accessibility is off" : a.act(act, id, text, dir);
         }
 
         @JavascriptInterface
         public boolean hasPerm(String key) {
             if ("overlay".equals(key)) return Settings.canDrawOverlays(MainActivity.this);
+            if ("access".equals(key)) return VenusAccessibility.instance != null;
             if ("contacts".equals(key)) return has(Manifest.permission.READ_CONTACTS);
             if ("gallery".equals(key)) {
                 for (String m : mediaPerms()) if (!has(m)) return false;
@@ -325,6 +393,7 @@ public class MainActivity extends Activity {
             });
         }
 
+        /** "call Rahim" -> phone number, or "" */
         @JavascriptInterface
         public String findContact(String name) {
             if (name == null || name.trim().isEmpty()) return "";
@@ -339,4 +408,4 @@ public class MainActivity extends Activity {
             return "";
         }
     }
-    }
+}
