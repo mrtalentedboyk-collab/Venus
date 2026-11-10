@@ -11,6 +11,7 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.Process;
 
+/** Keeps the app alive in the background so the microphone keeps listening. */
 public class VoiceService extends Service {
     private static final String CH = "venus_listen";
 
