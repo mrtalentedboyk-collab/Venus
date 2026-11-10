@@ -288,7 +288,7 @@ public class MainActivity extends Activity {
         i.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
         i.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false);
         if (Build.VERSION.SDK_INT >= 33)
-            i.putExtra(RecognizerIntent.EXTRA_ADDITIONAL_LANGUAGES, new String[]{"bn-BD", "en-US", "hi-IN"});
+            i.putExtra("android.speech.extra.ADDITIONAL_LANGUAGES", new String[]{"bn-BD", "en-US", "hi-IN"});
         beepMute(true);
         sr.startListening(i);
         h.postDelayed(() -> beepMute(false), 700);
@@ -408,4 +408,4 @@ public class MainActivity extends Activity {
             return "";
         }
     }
-}
+                               }
