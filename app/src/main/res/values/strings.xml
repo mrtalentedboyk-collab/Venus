@@ -1,1 +1,4 @@
-<resources><string name="app_name">Venus</string></resources>
+<resources>
+    <string name="app_name">Venus</string>
+    <string name="a11y_desc">Lets Venus tap, type and scroll in other apps when you ask it to do a task.</string>
+</resources>
